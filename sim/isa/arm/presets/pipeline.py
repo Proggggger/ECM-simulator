@@ -35,7 +35,7 @@ def build(program: list[int], branch_predictor=None, dmem=None, alu=None):
     b.add("if_id",       IF_ID(nop_encoding=0xD503201F))  # ARM NOP
     b.add("decode",      ARMDecoder())
     b.add("regfile",     StandardRegisterFile(num_regs=32, zero_reg=True, zero_reg_index=31, write_through=True))
-    b.add("hazard_det",  HazardDetector())
+    b.add("hazard_det",  HazardDetector(zero_reg_index=31))   # XZR, not 0
     b.add("id_ex",       ID_EX())
     b.add("forwarding",  ForwardingUnit(zero_reg_index=31))  # ARM zero reg is XZR (31), not 0
     b.add("alu_mux",     AluInputMux())
@@ -153,6 +153,14 @@ def build(program: list[int], branch_predictor=None, dmem=None, alu=None):
     b.wire("branch.mispredict",     "id_ex.flush")
     b.wire("branch.mispredict",     "ex_mem.flush")
     b.wire("ex_mem.alu_result_out", "dmem.addr")
+    # A cache-modelling dmem (CachedDataMemory) exposes an optional read-enable
+    # so it can tell a genuine load from an ALU result on the shared address
+    # bus. Plain DataMemory has no such port, so wire it only when present.
+    if "mem_read" in dmem.ports_spec:
+        b.wire("ex_mem.mem_read_out", "dmem.mem_read")
+        # The preset KNOWS it wired the port, so switch the cache off its
+        # address-change heuristic and onto exact load accounting.
+        dmem.use_mem_read_port = True
     b.wire("ex_mem.rs2_data_out",   "dmem.wdata")
     b.wire("ex_mem.mem_write_out",  "dmem.wen")
     b.wire("ex_mem.alu_result_out", "mem_wb.alu_result_in")

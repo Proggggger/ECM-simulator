@@ -9,6 +9,9 @@ venv/
 # Test / build caches
 .pytest_cache/
 .ruff_cache/
+.coverage
+coverage.json
+htmlcov/
 
 # Editor / OS
 .vscode/

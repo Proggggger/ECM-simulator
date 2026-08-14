@@ -28,11 +28,31 @@ class TestLabPage(unittest.TestCase):
             self.assertEqual(res.status_code, 200, path)
 
     def test_simulator_page_links_to_lab(self):
+        """The two pages cross-link.
+
+        The hrefs are emitted via url_for so the UI stays correct when mounted
+        under a URL prefix, so assert against the RESOLVED urls rather than
+        hardcoded paths (both routes carry an alias: / + /rtl_cpu, /lab +
+        /program_lab, and url_for picks one of each).
+        """
+        with app.test_request_context():
+            from flask import url_for
+            lab_url = url_for("program_lab")
+            index_url = url_for("index")
+
         body = self.client.get("/").get_data(as_text=True)
-        self.assertIn('href="/lab"', body)
+        self.assertIn(f'href="{lab_url}"', body)
         # The lab links back to the simulator.
         lab = self.client.get("/lab").get_data(as_text=True)
-        self.assertIn('href="/"', lab)
+        self.assertIn(f'href="{index_url}"', lab)
+
+    def test_page_cross_links_resolve(self):
+        """Whatever url_for picked, the emitted links must actually serve."""
+        with app.test_request_context():
+            from flask import url_for
+            urls = [url_for("index"), url_for("program_lab")]
+        for url in urls:
+            self.assertEqual(self.client.get(url).status_code, 200, url)
 
     def test_lab_page_ids_match_js_contract(self):
         """Every getElementById in program_lab.js must exist in the template

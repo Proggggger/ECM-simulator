@@ -274,6 +274,18 @@ class X86Decoder(ComponentBase):
             self["alu_src"] = 1
             self["reg_write"] = 1
         elif mod == 0b00:
+            # Register-indirect [reg], length 2.
+            #
+            # NOTE: architecturally rm=100 is a SIB escape and rm=101 is
+            # "[disp32], no base", which would make this 3 and 6 bytes. This
+            # decoder deliberately treats both as plain [reg] because THE
+            # PROJECT'S OWN ASSEMBLER emits `MOV EAX,[ESP]` / `[EBP]` exactly
+            # that way (mod=00, rm=100/101, 2 bytes). Decoder and assembler
+            # agree end-to-end, which is what matters for the programs this
+            # simulator actually runs; "fixing" it here would desync them and
+            # break compiled Core-C's [EBP] frame accesses.
+            # Pinned by test_x86_mov_mod00_escape_encodings_are_treated_as_
+            # plain_indirect and its assembler-agreement companion.
             self["instr_len"] = 2
             if opcode == OP_MOV_R_RM:
                 self["rs1"] = rm
@@ -307,6 +319,32 @@ class X86Decoder(ComponentBase):
                 self["rs1"] = rm
                 self["rs2"] = reg
                 self["imm"] = disp8
+                self["alu_op"] = AluOp.ADD
+                self["alu_src"] = 1
+                self["mem_write"] = 1
+        elif mod == 0b10:
+            # [reg + disp32] — the base+displacement form the datapath CAN
+            # express (identical to mod=01 but with a 32-bit displacement).
+            # Previously unhandled: instr_len kept its reset value of 1, so
+            # fetch advanced one byte, landed mid-instruction and desynced the
+            # whole downstream byte stream.
+            disp32 = sign_extend(
+                _byte(stream, 2) | (_byte(stream, 3) << 8)
+                | (_byte(stream, 4) << 16) | (_byte(stream, 5) << 24), 32)
+            self["instr_len"] = 6
+            if opcode == OP_MOV_R_RM:
+                self["rs1"] = rm
+                self["rd"] = reg
+                self["imm"] = disp32
+                self["alu_op"] = AluOp.ADD
+                self["alu_src"] = 1
+                self["mem_read"] = 1
+                self["reg_write"] = 1
+                self["wb_sel"] = WBSel.MEMORY
+            else:
+                self["rs1"] = rm
+                self["rs2"] = reg
+                self["imm"] = disp32
                 self["alu_op"] = AluOp.ADD
                 self["alu_src"] = 1
                 self["mem_write"] = 1

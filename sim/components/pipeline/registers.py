@@ -107,6 +107,8 @@ class ID_EX(ComponentBase):
         "valid_in":      Port(1,  "in",  "Valid from IF/ID"),
         # Pipeline control
         "stall":         Port(1,  "in"), "flush":         Port(1,  "in"),
+        # Hold (not bubble): a downstream stage is busy — see rising_edge.
+        "hold":          Port(1,  "in",  "Freeze this stage in place"),
         # Data outputs
         "pc_out":        Port(32, "out"), "pc4_out":       Port(32, "out"),
         "rs1_data_out":  Port(32, "out"), "rs2_data_out":  Port(32, "out"),
@@ -147,6 +149,12 @@ class ID_EX(ComponentBase):
         self["valid"] = self._valid
 
     def rising_edge(self):
+        if self["hold"] and not self["flush"]:
+            # HOLD is not the same as STALL. A downstream stage is busy (e.g. a
+            # cache miss in MEM), so this instruction must stay exactly where it
+            # is — inserting a bubble here would DESTROY it, since nothing
+            # downstream is consuming it either.
+            return
         if self["flush"] or self["stall"]:
             # Flush: branch mispredict clears the stage.
             # Stall: hazard-detector bubble insertion — the instruction
@@ -198,6 +206,10 @@ class EX_MEM(ComponentBase):
         "valid_in":      Port(1,  "in",  "Valid from ID/EX"),
         # Pipeline control
         "flush":         Port(1,  "in"),
+        # Hold the latched instruction in place (a MEM-stage stall, e.g. a
+        # cache miss being serviced). Unwired it reads 0, so a preset that
+        # does not drive it behaves exactly as before.
+        "stall":         Port(1,  "in",  "Hold (MEM-stage stall)"),
         # Data outputs
         "alu_result_out":Port(32, "out"), "alu_zero_out":   Port(1,  "out"),
         "rs2_data_out":  Port(32, "out"),
@@ -239,6 +251,8 @@ class EX_MEM(ComponentBase):
             for f in self._FIELDS:
                 self._latched[f] = 0
             self._valid = 0
+        elif self["stall"]:
+            pass                      # hold: the MEM stage is busy
         else:
             for f in self._FIELDS:
                 self._latched[f] = self[f"{f}_in"]
@@ -270,6 +284,9 @@ class MEM_WB(ComponentBase):
         "wb_sel_in":     Port(2,  "in"),
         # Valid propagation from upstream (EX/MEM)
         "valid_in":      Port(1,  "in",  "Valid from EX/MEM"),
+        # Pipeline control. Unwired it reads 0, so a preset that does not drive
+        # it behaves exactly as before.
+        "stall":         Port(1,  "in",  "MEM stalled: insert a bubble"),
         # Data outputs
         "alu_result_out":Port(32, "out"),
         "mem_data_out":  Port(32, "out"),
@@ -295,6 +312,15 @@ class MEM_WB(ComponentBase):
         self["valid"] = self._valid
 
     def rising_edge(self):
+        if self["stall"]:
+            # The MEM stage has not finished (cache miss being serviced), so
+            # NOTHING completes this cycle: insert a bubble rather than latch a
+            # value the memory has not produced yet. EX/MEM is held in the same
+            # cycle, so the instruction is latched normally once the miss ends.
+            for f in self._FIELDS:
+                self._latched[f] = 0
+            self._valid = 0
+            return
         for f in self._FIELDS:
             self._latched[f] = self[f"{f}_in"]
         self._valid = 1 if self["valid_in"] else 0

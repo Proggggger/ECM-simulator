@@ -135,7 +135,7 @@ def _x86_cheatsheet() -> list[dict]:
         {"category": "Logical",     "mnemonic": "OR",    "syntax": "OR r32, r32",           "description": "dst |= src; set flags",             "example": "OR EAX, ECX"},
         {"category": "Logical",     "mnemonic": "OR",    "syntax": "OR r32, imm8",          "description": "dst |= imm8; set flags",            "example": "OR EAX, 0x0F"},
         {"category": "Logical",     "mnemonic": "XOR",   "syntax": "XOR r32, r32",          "description": "dst ^= src; set flags",             "example": "XOR EAX, ECX"},
-        {"category": "Logical",     "mnemonic": "XOR",   "syntax": "XOR r32, imm8",         "description": "dst ^= imm8; set flags",            "example": "XOR EAX, 0xFF"},
+        {"category": "Logical",     "mnemonic": "XOR",   "syntax": "XOR r32, imm8",         "description": "dst ^= imm8; set flags",            "example": "XOR EAX, 0x0F"},
 
         # ── Control Flow ────────────────────────────────────────────
         {"category": "Control",     "mnemonic": "JMP",   "syntax": "JMP label",             "description": "Unconditional jump",                "example": "JMP loop"},

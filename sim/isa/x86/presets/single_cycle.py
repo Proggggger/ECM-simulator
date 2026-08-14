@@ -99,6 +99,14 @@ def build(
 
     # ── Data Memory ───────────────────────────────────────────────
     b.wire("alu.result",             "dmem.addr")
+    # A cache-modelling dmem (CachedDataMemory) exposes an optional read-enable
+    # so it can tell a genuine load from an ALU result on the shared address
+    # bus. Plain DataMemory has no such port, so wire it only when present.
+    if "mem_read" in dmem.ports_spec:
+        b.wire("decode.mem_read", "dmem.mem_read")
+        # The preset KNOWS it wired the port, so switch the cache off its
+        # address-change heuristic and onto exact load accounting.
+        dmem.use_mem_read_port = True
     b.wire("regfile.rs2_data",       "dmem.wdata")
 
     # ── Writeback Mux ─────────────────────────────────────────────

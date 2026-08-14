@@ -166,6 +166,15 @@ def build(program: list[int], branch_predictor=None, dmem=None, alu=None):
 
     # ── MEM stage: Data memory ────────────────────────────────────
     b.wire("ex_mem.alu_result_out", "dmem.addr")
+
+    # A cache-modelling dmem (CachedDataMemory) exposes an optional read-enable
+    # so it can tell a genuine load from an ALU result on the shared address
+    # bus. Plain DataMemory has no such port, so wire it only when present.
+    if "mem_read" in dmem.ports_spec:
+        b.wire("ex_mem.mem_read_out", "dmem.mem_read")
+        # The preset KNOWS it wired the port, so switch the cache off its
+        # address-change heuristic and onto exact load accounting.
+        dmem.use_mem_read_port = True
     b.wire("ex_mem.rs2_data_out",   "dmem.wdata")
     b.wire("ex_mem.mem_write_out",  "dmem.wen")
 

@@ -42,6 +42,10 @@ def build(
         alu = StandardALU()
 
     configurable = cycle_costs is not None
+    # A timing-accurate cache (CachedDataMemory with timing_enabled) exposes
+    # stall/ready and needs the same commit-gating the configurable model uses.
+    cache_timing = (getattr(dmem, "timing_enabled", False)
+                    and "stall" in getattr(dmem, "ports_spec", {}))
     b = CPUBuilder()
 
     # ── Add components ────────────────────────────────────────────
@@ -60,6 +64,10 @@ def build(
         b.add("gate_reg_wen", GatedSignal(ui_label="Gate RegW"))
         b.add("gate_mem_wen", GatedSignal(ui_label="Gate MemW"))
         b.add("gate_branch",  GatedSignal(ui_label="Gate Branch"))
+    elif cache_timing:
+        # Same gates, driven by the cache's `ready` instead of a cycle budget.
+        b.add("gate_reg_wen", GatedSignal(ui_label="Gate RegW"))
+        b.add("gate_branch",  GatedSignal(ui_label="Gate Branch"))
 
     # ── Evaluation order (dataflow order) ─────────────────────────
     order = ["fetch", "imem", "decode"]
@@ -68,6 +76,8 @@ def build(
     order += ["regfile", "alu_mux", "alu", "dmem", "wb", "branch"]
     if configurable:
         order += ["gate_reg_wen", "gate_mem_wen", "gate_branch"]
+    elif cache_timing:
+        order += ["gate_reg_wen", "gate_branch"]
     order.append("bpred")
     b.set_eval_order(order)
 
@@ -96,6 +106,14 @@ def build(
 
     # ── Data Memory ───────────────────────────────────────────────
     b.wire("alu.result",        "dmem.addr")
+    # A cache-modelling dmem (CachedDataMemory) exposes an optional read-enable
+    # so it can tell a genuine load from an ALU result on the shared address
+    # bus. Plain DataMemory has no such port, so wire it only when present.
+    if "mem_read" in dmem.ports_spec:
+        b.wire("decode.mem_read", "dmem.mem_read")
+        # The preset KNOWS it wired the port, so switch the cache off its
+        # address-change heuristic and onto exact load accounting.
+        dmem.use_mem_read_port = True
     b.wire("regfile.rs2_data",  "dmem.wdata")
 
     # ── Writeback Mux ─────────────────────────────────────────────
@@ -124,8 +142,22 @@ def build(
     if not configurable:
         # Classic single-cycle: commit + advance every cycle.
         b.wire("decode.mem_write",     "dmem.wen")
-        b.wire("decode.reg_write",     "regfile.wen")
-        b.wire("branch.branch_taken",  "fetch.branch_taken")
+        if cache_timing:
+            # A timing-accurate cache stalls on a miss. `dmem.wen` is NOT
+            # gated by `dmem.ready` — that would be a combinational loop
+            # (ready is computed from wen) and it is unnecessary: the cache
+            # component defers the store internally until the fill completes.
+            # Only the register write and the PC redirect need holding back.
+            b.wire("dmem.stall",           "fetch.stall")
+            b.wire("decode.reg_write",     "gate_reg_wen.a")
+            b.wire("dmem.ready",           "gate_reg_wen.b")
+            b.wire("gate_reg_wen.out",     "regfile.wen")
+            b.wire("branch.branch_taken",  "gate_branch.a")
+            b.wire("dmem.ready",           "gate_branch.b")
+            b.wire("gate_branch.out",      "fetch.branch_taken")
+        else:
+            b.wire("decode.reg_write",     "regfile.wen")
+            b.wire("branch.branch_taken",  "fetch.branch_taken")
     else:
         # Configurable: hold each instruction for its per-class budget; commit
         # (writes + PC redirect) only on its final cycle, stall the PC until then.

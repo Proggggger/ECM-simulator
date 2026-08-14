@@ -94,12 +94,20 @@ class AssemblerBase:
         """Encode each instruction line. Returns flat list of ints."""
         result = []
         for lineno, pc, line in cleaned:
-            parts = self._split_instruction(line)
-            mnemonic = parts[0].upper()
-            operands = parts[1:]
             try:
+                # _split_instruction is INSIDE the try: per-ISA tokenizers can
+                # raise on malformed operands (e.g. ARM's unclosed '['), and
+                # those errors need the same line attribution as encode errors.
+                parts = self._split_instruction(line)
+                mnemonic = parts[0].upper()
+                operands = parts[1:]
                 encoded = self._encode(mnemonic, operands, pc, labels)
-            except AssemblerError:
+            except AssemblerError as e:
+                # Encoders raise bare AssemblerErrors ("ADD requires 3
+                # operands") with no position. Attach the line so the user can
+                # actually find it; leave an already-located error untouched.
+                if getattr(e, "line_number", None) is None:
+                    raise AssemblerError(str(e), lineno, line) from e
                 raise
             except Exception as e:
                 raise AssemblerError(str(e), lineno, line) from e

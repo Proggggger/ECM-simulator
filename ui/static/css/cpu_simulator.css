@@ -1665,3 +1665,140 @@ marker#arrowhead path { fill: var(--text-dim); }
 
 .compiler-stages__body::-webkit-scrollbar { width: 6px; height: 6px; }
 .compiler-stages__body::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+/* ── Data cache panel ─────────────────────────────────────────────────
+   Reuses the configurable panel's cfg-* knob/readout language so the two
+   feel like one system; the set-array grid below is the only new visual. */
+.cache-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+}
+.cache-toggle input { accent-color: var(--teal); cursor: pointer; }
+
+.cache-selects { display: flex; gap: 8px; margin-bottom: 10px; }
+.cache-select { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.cache-select > span {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.cache-select select {
+    background: var(--bg);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    padding: 4px 6px;
+    cursor: pointer;
+}
+.cache-select select:focus { outline: none; border-color: var(--teal); }
+
+.cache-timing {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.cache-timing input { accent-color: var(--amber); cursor: pointer; }
+.cache-timing--off { opacity: 0.45; cursor: not-allowed; }
+.cache-timing--off input { cursor: not-allowed; }
+.cache-timing__note {
+    flex-basis: 100%;
+    font-size: 0.62rem;
+    color: var(--amber);
+    line-height: 1.4;
+}
+
+/* Set array: the accessed set drawn way-by-way. Tag + valid/dirty per way,
+   flashing on access and rose on eviction, so a conflict miss is visible as
+   a thing that HAPPENS rather than a number that changed. */
+.cache-sets {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    padding: 8px;
+    margin-bottom: 12px;
+}
+.cache-sets__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 7px;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+}
+.cache-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    background: var(--bg-elevated);
+    color: var(--text-dim);
+}
+.cache-badge--hit   { background: var(--green-dim); color: var(--green); }
+.cache-badge--miss  { background: var(--rose-dim);  color: var(--rose); }
+
+.cache-ways { display: flex; flex-direction: column; gap: 4px; }
+.cache-way {
+    display: grid;
+    grid-template-columns: 26px 1fr auto;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-card);
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    transition: background var(--transition), border-color var(--transition);
+}
+.cache-way__idx { color: var(--text-dim); }
+.cache-way__tag { color: var(--text-muted); }
+.cache-way__flags { display: flex; gap: 4px; }
+.cache-way__flag {
+    padding: 0 4px;
+    border-radius: 2px;
+    font-size: 0.58rem;
+    font-weight: 700;
+    background: var(--bg-elevated);
+    color: var(--text-dim);
+}
+.cache-way--valid { border-color: var(--border-light); }
+.cache-way--valid .cache-way__tag { color: var(--text); }
+.cache-way--valid .cache-way__flag--v { background: var(--teal-dim); color: var(--teal); }
+.cache-way--dirty .cache-way__flag--d { background: var(--amber-dim); color: var(--amber); }
+/* The way this cycle's access landed in. */
+.cache-way--active {
+    border-color: var(--teal);
+    background: var(--teal-dim);
+    box-shadow: 0 0 0 1px var(--teal-dim);
+}
+/* A line was thrown out to make room — the moment worth noticing. */
+.cache-way--evicted {
+    border-color: var(--rose);
+    background: var(--rose-dim);
+}
+.cache-way--lru { opacity: 0.72; }
+.cache-way__age {
+    font-size: 0.58rem;
+    color: var(--text-dim);
+}
+/* An impossible geometry (fewer lines than ways) — flag the offending knob. */
+.cfg-range--invalid { accent-color: var(--rose); }

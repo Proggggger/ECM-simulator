@@ -85,6 +85,8 @@ class ARMAssembler(AssemblerBase):
             ch = rest[i]
             if ch == '[':
                 # Read until matching ]
+                if ']' not in rest[i:]:
+                    raise AssemblerError(f"Unclosed '[' in operand: {rest!r}")
                 j = rest.index(']', i)
                 tokens.append(current.strip().rstrip(','))
                 tokens.append(rest[i:j+1].strip())

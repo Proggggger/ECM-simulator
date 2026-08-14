@@ -45,6 +45,13 @@ from sim.compiler.errors import CompilerError
 from sim.components.multicycle.budget_controller import (
     clock_period as _clock_period, CLASSES as _CYCLE_CLASSES, WORK as _CYCLE_WORK,
     DEFAULT_COSTS as _DEFAULT_COSTS)
+from sim.components.memory.cache import (
+    CacheConfig as _CacheConfig,
+    TIMING_MODELS as _CACHE_TIMING_MODELS,
+    cached_dmem_for as _cached_dmem_for,
+    policy_catalog as _cache_policy_catalog,
+    supports_timing as _cache_supports_timing,
+)
 
 UI_DIR = os.path.join(ROOT, "ui")
 PROGRAMS_DIR = os.path.join(ROOT, "programs")
@@ -66,8 +73,64 @@ def _coerce_int(value, default):
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: Python's json module ACCEPTS the non-standard literals
+        # Infinity/-Infinity, and int(inf) overflows. Without this the route
+        # would raise a raw 500 instead of the documented JSON 400.
         return None
+
+
+def _build_cache_dmem(body, model, num_lanes):
+    """Build a cache-modelling dmem from a request body, or None.
+
+    Absent/false ``cache`` -> None (the plain DataMemory path, unchanged).
+    Raises ValueError with a user-facing message on any bad input, which the
+    caller turns into the documented JSON 400.
+    """
+    raw = body.get("cache")
+    if raw in (None, False):
+        return None
+    if raw is True:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("'cache' must be an object (or true for defaults)")
+
+    timing = raw.get("timing_enabled", False)
+    if not isinstance(timing, bool):
+        raise ValueError("cache['timing_enabled'] must be a boolean")
+    if timing and not _cache_supports_timing(model):
+        raise ValueError(
+            f"cache timing is not supported on the '{model}' model "
+            f"(supported: {list(_CACHE_TIMING_MODELS)}). Omit "
+            f"'timing_enabled' to collect statistics without stalling.")
+
+    # Coerce the numeric knobs through _coerce_int so Infinity/NaN/strings are
+    # rejected with a 400 like every other numeric field, then let CacheConfig
+    # apply its own power-of-two and range validation.
+    cfg_kwargs = {}
+    for key in ("size_kb", "line_bytes", "assoc", "hit_cycles", "miss_penalty"):
+        if key in raw:
+            val = _coerce_int(raw[key], None)
+            if val is None:
+                raise ValueError(f"cache['{key}'] must be an integer")
+            cfg_kwargs[key] = val
+    for key in ("policy", "write_policy"):
+        if key in raw:
+            if not isinstance(raw[key], str):
+                raise ValueError(f"cache['{key}'] must be a string")
+            cfg_kwargs[key] = raw[key]
+    if "write_allocate" in raw:
+        if not isinstance(raw["write_allocate"], bool):
+            raise ValueError("cache['write_allocate'] must be a boolean")
+        cfg_kwargs["write_allocate"] = raw["write_allocate"]
+
+    try:
+        config = _CacheConfig(**cfg_kwargs)
+    except ValueError as exc:
+        raise ValueError(f"invalid cache config: {exc}") from exc
+
+    return _cached_dmem_for(model, config, timing_enabled=timing,
+                            num_lanes=num_lanes)
 
 
 app = Flask(__name__, static_folder=os.path.join(UI_DIR, "static"), template_folder=os.path.join(UI_DIR, "templates"))
@@ -238,6 +301,57 @@ def list_predictors():
     return jsonify({"predictors": result})
 
 
+@app.route("/cache/policies")
+def list_cache_policies():
+    """Cache replacement policies + the geometry/timing limits the UI needs.
+
+    Policies are auto-discovered by scanning the policies package, exactly like
+    /predictors scans the predictors package — dropping in a new policy module
+    makes it appear here with no registration step.
+    """
+    from sim.components.memory.cache import (
+        DEFAULT_ASSOC, DEFAULT_LINE_BYTES, DEFAULT_MISS_PENALTY,
+        DEFAULT_POLICY, DEFAULT_SIZE_KB, DEFAULT_WRITE_POLICY, WRITE_POLICIES,
+    )
+    from sim.components.memory.cache.model import (
+        MAX_ASSOC, MAX_LINE_BYTES, MAX_MISS_PENALTY, MAX_SIZE_KB,
+        MIN_ASSOC, MIN_LINE_BYTES, MIN_SIZE_KB,
+    )
+
+    def _pow2_range(lo, hi):
+        out, v = [], lo
+        while v <= hi:
+            out.append(v)
+            v *= 2
+        return out
+
+    return jsonify({
+        "policies": _cache_policy_catalog(),
+        "write_policies": list(WRITE_POLICIES),
+        "defaults": {
+            "size_kb": DEFAULT_SIZE_KB,
+            "line_bytes": DEFAULT_LINE_BYTES,
+            "assoc": DEFAULT_ASSOC,
+            "policy": DEFAULT_POLICY,
+            "write_policy": DEFAULT_WRITE_POLICY,
+            "write_allocate": True,
+            "miss_penalty": DEFAULT_MISS_PENALTY,
+        },
+        # Only powers of two are legal (index/offset are bit-slices), so hand
+        # the UI the exact allowed values rather than a min/max it would have
+        # to re-derive.
+        "choices": {
+            "size_kb": _pow2_range(MIN_SIZE_KB, MAX_SIZE_KB),
+            "line_bytes": _pow2_range(MIN_LINE_BYTES, MAX_LINE_BYTES),
+            "assoc": _pow2_range(MIN_ASSOC, MAX_ASSOC),
+        },
+        "miss_penalty_max": MAX_MISS_PENALTY,
+        # Models whose presets wire the stall path. Everywhere else the cache
+        # collects statistics without changing cycle counts.
+        "timing_models": list(_CACHE_TIMING_MODELS),
+    })
+
+
 @app.route("/topology/<path:preset_name>")
 def topology(preset_name: str):
     if preset_name not in PRESETS:
@@ -303,11 +417,17 @@ def simulate():
 
     bp_name     = body.get("branch_predictor", "")
     bp_stage    = body.get("prediction_stage", "id")
+    # Guard the TYPE before the dict lookup: a JSON list/object is unhashable
+    # and `x not in dict` would raise TypeError -> raw 500.
+    if bp_name is not None and not isinstance(bp_name, str):
+        return jsonify({"error": "'branch_predictor' must be a string"}), 400
     if bp_name and bp_name not in PREDICTOR_CLASSES:
         return jsonify({"error": f"Unknown branch predictor '{bp_name}'"}), 400
     bp_cls = PREDICTOR_CLASSES.get(bp_name)
     branch_predictor = bp_cls(prediction_stage=bp_stage) if bp_cls else None
 
+    if not isinstance(preset_name, str):
+        return jsonify({"error": "'preset' must be a string"}), 400
     if preset_name not in PRESETS:
         return jsonify({"error": f"Unknown preset '{preset_name}'"}), 400
 
@@ -351,17 +471,26 @@ def simulate():
             cycle_costs[k] = max(1, min(v, 64))   # clamp to 1..64 cycles
 
     try:
+        cache_dmem = _build_cache_dmem(body, model, num_lanes)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
         if model == "superscalar":
             cpu = PRESETS[preset_name]["build"](program, num_lanes=num_lanes,
-                                                branch_predictor=branch_predictor)
+                                                branch_predictor=branch_predictor,
+                                                **({"dmem": cache_dmem} if cache_dmem else {}))
         elif model == "configurable":
             cpu = PRESETS[preset_name]["build"](program,
                                                 branch_predictor=branch_predictor,
-                                                cycle_costs=cycle_costs)
+                                                cycle_costs=cycle_costs,
+                                                **({"dmem": cache_dmem} if cache_dmem else {}))
         else:
             kwargs = {}
             if branch_predictor is not None:
                 kwargs["branch_predictor"] = branch_predictor
+            if cache_dmem is not None:
+                kwargs["dmem"] = cache_dmem
             cpu = PRESETS[preset_name]["build"](program, **kwargs)
         if run_to_completion:
             states = run_simulation(cpu, num_cycles=MAX_AUTO_CYCLES,
@@ -384,6 +513,12 @@ def simulate():
         # (+1 accounts for the reset cycle prepended by include_reset.)
         resp["run_to_completion"] = True
         resp["completed"] = len(states) < MAX_AUTO_CYCLES + 1
+    if cache_dmem is not None:
+        # Final cache statistics for the run. The per-cycle set view already
+        # rides along inside each cycle's dmem state; this is the summary the
+        # UI's readout needs without walking every cycle.
+        resp["cache_stats"] = cache_dmem.cache.to_dict()
+        resp["cache_stats"]["timing_enabled"] = cache_dmem.timing_enabled
     if model == "configurable":
         # Time model: clock period (work units/cycle) is set by the busiest
         # class; total time = cycles x period. "cycles" is the TRUE completion
@@ -439,13 +574,19 @@ def compare():
 
     all_models = sorted({p["model"] for p in PRESETS.values()})
     models = body.get("models", all_models)
-    if not isinstance(models, list) or not set(models) <= set(all_models):
+    # Every element must be hashable before set() touches it — a list of dicts
+    # would raise TypeError here and escape as a raw 500.
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return jsonify({"error": f"'models' must be a subset of {all_models}"}), 400
+    if not set(models) <= set(all_models):
         return jsonify({"error": f"'models' must be a subset of {all_models}"}), 400
 
     if source.strip():
         isas = sorted(ISA_CONFIGS)          # Core-C: compare across all ISAs
     else:
         isa_name = body.get("isa", "riscv")
+        if not isinstance(isa_name, str):
+            return jsonify({"error": "'isa' must be a string"}), 400
         if isa_name not in ISA_CONFIGS:
             return jsonify({"error": f"Unknown ISA '{isa_name}'"}), 400
         isas = [isa_name]                   # asm is inherently single-ISA
@@ -615,6 +756,8 @@ def compile_endpoint():
         return jsonify({"error": "'source' must be a string"}), 400
     if not source.strip():
         return jsonify({"error": "Empty source"}), 400
+    if not isinstance(isa_name, str):
+        return jsonify({"error": "'isa' must be a string"}), 400
     if isa_name not in ISA_CONFIGS:
         return jsonify({"error": f"Unknown ISA '{isa_name}'"}), 400
 
@@ -804,6 +947,11 @@ def get_example(filepath):
     # Validate components
     if isa not in _VALID_ISAS:
         return jsonify({"error": f"Unknown ISA '{isa}'"}), 400
+    # An embedded NUL must be rejected HERE: it survives the ".." and
+    # basename checks, and os.path.realpath() below raises ValueError on it
+    # ("embedded null character in path") -> raw 500 instead of a JSON 400.
+    if "\x00" in filepath:
+        return jsonify({"error": "Invalid path"}), 400
     if ".." in filepath or filename != os.path.basename(filename):
         return jsonify({"error": "Invalid path"}), 400
     if not filename.endswith(".asm"):

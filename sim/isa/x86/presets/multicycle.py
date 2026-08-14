@@ -145,6 +145,13 @@ def build(
     b.wire("alu_out.data_out",  "dmem.addr")
     b.wire("reg_b.data_out",    "dmem.wdata")
     b.wire("gate_mem_wen.out",  "dmem.wen")
+    # A cache-modelling dmem exposes an optional read-enable. The controller's
+    # MEMORY-phase mem_read_en is the signal co-timed with dmem.wen here, so
+    # the cache sees exactly the real loads instead of guessing from the bus.
+    if "mem_read" in dmem.ports_spec:
+        b.wire("mc_ctrl.mem_read_en", "dmem.mem_read")
+        dmem.use_mem_read_port = True
+
 
     # ── Writeback Mux ────────────────────────────────────────────
     b.wire("alu.result",            "wb.alu_in")

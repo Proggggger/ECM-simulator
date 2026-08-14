@@ -106,7 +106,21 @@ const wireLayerControl = document.getElementById('wire-layer-control');
 // Configurable model: cycle-budget knobs + readout, single-cycle explainer.
 const cfgPanel     = document.getElementById('configurable-panel');
 const scNote       = document.getElementById('single-cycle-note');
-const cfgRanges    = document.querySelectorAll('.cfg-range');
+const cfgRanges    = document.querySelectorAll('.cfg-range:not([data-cache])');
+// ── Data cache panel handles ──
+const cachePanel     = document.getElementById('cache-panel');
+const cacheEnableChk = document.getElementById('cache-enable');
+const cacheBody      = document.getElementById('cache-body');
+const cacheRanges    = document.querySelectorAll('[data-cache]');
+const cachePresetBtns= document.querySelectorAll('[data-cache-preset]');
+const cachePolicySel = document.getElementById('cache-policy');
+const cacheWriteSel  = document.getElementById('cache-write-policy');
+const cacheTimingChk = document.getElementById('cache-timing');
+const cacheTimingWrap= document.getElementById('cache-timing-wrap');
+const cacheTimingNote= document.getElementById('cache-timing-note');
+const cacheWaysEl    = document.getElementById('cache-ways');
+const cacheSetLabel  = document.getElementById('cache-set-label');
+const cacheSetResult = document.getElementById('cache-set-result');
 const cfgPresets   = document.querySelectorAll('.cfg-preset');
 const cfgCyclesOut = document.getElementById('cfg-cycles');
 const cfgPeriodOut = document.getElementById('cfg-period');
@@ -510,6 +524,7 @@ function updatePanelVisibility() {
     }
     if (cfgPanel) cfgPanel.style.display = (currentModel === 'configurable') ? 'block' : 'none';
     if (scNote) scNote.style.display = (currentModel === 'single_cycle') ? 'block' : 'none';
+    cacheSyncTimingAvailability();
     // The cycle-budget readout needs the settled cycle count, so the
     // Configurable model runs to completion by default.
     if (currentModel === 'configurable' && autoCyclesChk && !autoCyclesChk.checked) {
@@ -562,6 +577,226 @@ cfgPresets.forEach(btn => {
     });
 });
 cfgSyncLabels();
+
+
+// ── Data cache panel ─────────────────────────────────────────────
+// Geometry knobs are log2 sliders (only powers of two are legal, since the
+// index/offset are bit-slices), so the slider value is an EXPONENT and the
+// label shows the real number. `/cache/policies` supplies the legal value
+// lists, so the server stays the single source of truth for the limits.
+let cacheMeta = null;                  // /cache/policies payload
+const CACHE_PRESETS = {
+    tiny:    { size_kb: 1,  line_bytes: 16, assoc: 1, miss_penalty: 10 },
+    typical: { size_kb: 8,  line_bytes: 64, assoc: 4, miss_penalty: 10 },
+    big:     { size_kb: 64, line_bytes: 64, assoc: 8, miss_penalty: 30 },
+};
+const CACHE_LOG_KNOBS = ['size_kb', 'line_bytes', 'assoc'];
+
+function cacheKnob(key) {
+    return document.querySelector(`[data-cache="${key}"]`);
+}
+function cacheChoices(key) {
+    return (cacheMeta && cacheMeta.choices && cacheMeta.choices[key]) || null;
+}
+/** Real value for a knob (de-log for the geometry sliders). */
+function cacheKnobValue(key) {
+    const el = cacheKnob(key);
+    if (!el) return null;
+    const raw = parseInt(el.value, 10) || 0;
+    if (!CACHE_LOG_KNOBS.includes(key)) return raw;
+    const choices = cacheChoices(key);
+    if (!choices) return Math.pow(2, raw);
+    return choices[Math.max(0, Math.min(raw, choices.length - 1))];
+}
+function cacheSetKnob(key, realValue) {
+    const el = cacheKnob(key);
+    if (!el) return;
+    if (!CACHE_LOG_KNOBS.includes(key)) { el.value = realValue; return; }
+    const choices = cacheChoices(key);
+    const idx = choices ? choices.indexOf(realValue) : Math.log2(realValue);
+    if (idx >= 0) el.value = idx;
+}
+function cacheFmt(key, v) {
+    if (key === 'size_kb')    return v >= 1024 ? `${v / 1024}M` : `${v}K`;
+    if (key === 'line_bytes') return `${v}B`;
+    return String(v);
+}
+function cacheSyncLabels() {
+    cacheRanges.forEach(r => {
+        const key = r.dataset.cache;
+        const out = document.querySelector(`[data-cache-val="${key}"]`);
+        if (out) out.textContent = cacheFmt(key, cacheKnobValue(key));
+    });
+    // Highlight a preset only when every one of its fields matches.
+    cachePresetBtns.forEach(btn => {
+        const p = CACHE_PRESETS[btn.dataset.cachePreset] || {};
+        const match = Object.keys(p).every(k => p[k] === cacheKnobValue(k));
+        btn.classList.toggle('cfg-preset--active', match);
+    });
+    cacheValidateGeometry();
+}
+/** A cache must have at least `assoc` lines; grey out the knob when not. */
+function cacheValidateGeometry() {
+    const lines = (cacheKnobValue('size_kb') * 1024) / cacheKnobValue('line_bytes');
+    const bad = lines < cacheKnobValue('assoc');
+    const el = cacheKnob('assoc');
+    if (el) el.classList.toggle('cfg-range--invalid', bad);
+    return !bad;
+}
+/** Timing is only wired on some models — reflect that instead of failing later. */
+function cacheSyncTimingAvailability() {
+    if (!cacheTimingWrap || !cacheTimingChk) return;
+    const models = (cacheMeta && cacheMeta.timing_models) || ['single_cycle'];
+    const ok = models.includes(currentModel);
+    cacheTimingWrap.classList.toggle('cache-timing--off', !ok);
+    cacheTimingChk.disabled = !ok;
+    if (!ok) cacheTimingChk.checked = false;
+    if (cacheTimingNote) {
+        cacheTimingNote.textContent = ok
+            ? ''
+            : `Cycle-accurate stalling is not wired for the ${currentModel} model yet — `
+              + `statistics below are still exact.`;
+    }
+}
+/** The `cache` field for POST /simulate, or null when disabled. */
+function cacheRequestConfig() {
+    if (!cacheEnableChk || !cacheEnableChk.checked) return null;
+    if (!cacheValidateGeometry()) return null;
+    return {
+        size_kb:      cacheKnobValue('size_kb'),
+        line_bytes:   cacheKnobValue('line_bytes'),
+        assoc:        cacheKnobValue('assoc'),
+        miss_penalty: cacheKnobValue('miss_penalty'),
+        policy:       cachePolicySel ? cachePolicySel.value : 'lru',
+        write_policy: cacheWriteSel ? cacheWriteSel.value : 'write_back',
+        timing_enabled: !!(cacheTimingChk && cacheTimingChk.checked
+                           && !cacheTimingChk.disabled),
+    };
+}
+function cacheSetText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+/** End-of-run summary (from /simulate's cache_stats). */
+function updateCacheReadout(cs) {
+    if (!cs || !cs.stats) {
+        ['cache-accesses', 'cache-hitmiss', 'cache-evict', 'cache-stall',
+         'cache-hitrate'].forEach(id => cacheSetText(id, '—'));
+        return;
+    }
+    const s = cs.stats;
+    cacheSetText('cache-accesses', s.accesses);
+    cacheSetText('cache-hitmiss', `${s.hits} / ${s.misses}`);
+    cacheSetText('cache-evict', `${s.evictions} / ${s.writebacks}`);
+    cacheSetText('cache-stall', cs.timing_enabled ? s.stall_cycles : '—');
+    cacheSetText('cache-hitrate',
+        s.accesses ? `${(s.hit_rate * 100).toFixed(1)}%` : '—');
+}
+/** Per-cycle set array — draws the set this cycle's access touched. */
+function updateCacheView(state) {
+    if (!cacheWaysEl) return;
+    const dmem = state && state.dmem;
+    const cache = dmem && dmem.cache;
+    if (!cache) { cacheWaysEl.innerHTML = ''; return; }
+
+    const result = dmem.cache_result || 'IDLE';
+    if (cacheSetResult) {
+        cacheSetResult.textContent = result;
+        cacheSetResult.className = 'cache-badge'
+            + (result === 'HIT' ? ' cache-badge--hit'
+             : result === 'MISS' ? ' cache-badge--miss' : '');
+    }
+    if (cacheSetLabel) {
+        const nsets = cache.config ? cache.config.num_sets : '?';
+        cacheSetLabel.textContent = (cache.focus_set != null)
+            ? `Set ${cache.focus_set} / ${nsets}` : 'Set —';
+    }
+
+    // Which way did this cycle land in, and did it evict?
+    const last = dmem.last_access;
+    const lastList = Array.isArray(last) ? last : (last ? [last] : []);
+    const activeWays = new Set(lastList.filter(a => a.set === cache.focus_set)
+                                       .map(a => a.way));
+    const evictedWays = new Set(lastList.filter(a => a.evicted && a.set === cache.focus_set)
+                                        .map(a => a.way));
+
+    cacheWaysEl.innerHTML = (cache.ways || []).map(w => {
+        const cls = ['cache-way'];
+        if (w.valid) cls.push('cache-way--valid');
+        if (w.dirty) cls.push('cache-way--dirty');
+        if (evictedWays.has(w.way)) cls.push('cache-way--evicted');
+        else if (activeWays.has(w.way)) cls.push('cache-way--active');
+        if (w.valid && w.age === 0) cls.push('cache-way--lru');
+        const tag = w.valid ? `tag 0x${w.tag.toString(16)}` : 'empty';
+        return `<div class="${cls.join(' ')}">`
+             + `<span class="cache-way__idx">w${w.way}</span>`
+             + `<span class="cache-way__tag">${tag}</span>`
+             + `<span class="cache-way__flags">`
+             + `<span class="cache-way__flag cache-way__flag--v">V</span>`
+             + `<span class="cache-way__flag cache-way__flag--d">D</span>`
+             + `<span class="cache-way__age">${w.valid ? 'age ' + w.age : ''}</span>`
+             + `</span></div>`;
+    }).join('');
+}
+/** Populate the policy dropdowns from the server's discovered list. */
+async function loadCacheMeta() {
+    try {
+        const res = await fetch(`${API}/cache/policies`);
+        cacheMeta = await res.json();
+    } catch (e) {
+        console.warn('cache policy catalog unavailable', e);
+        return;
+    }
+    CACHE_LOG_KNOBS.forEach(key => {
+        const choices = cacheChoices(key);
+        const el = cacheKnob(key);
+        if (choices && el) { el.min = 0; el.max = choices.length - 1; }
+    });
+    if (cachePolicySel) {
+        cachePolicySel.innerHTML = (cacheMeta.policies || [])
+            .map(p => `<option value="${p.name}" title="${p.description}">${p.label}</option>`)
+            .join('');
+        cachePolicySel.value = (cacheMeta.defaults || {}).policy || 'lru';
+    }
+    if (cacheWriteSel) {
+        cacheWriteSel.innerHTML = (cacheMeta.write_policies || [])
+            .map(w => `<option value="${w}">${w.replace('_', '-')}</option>`).join('');
+        cacheWriteSel.value = (cacheMeta.defaults || {}).write_policy || 'write_back';
+    }
+    const d = cacheMeta.defaults || {};
+    Object.keys(CACHE_PRESETS.typical).forEach(k => {
+        if (d[k] != null) cacheSetKnob(k, d[k]);
+    });
+    cacheSyncLabels();
+    cacheSyncTimingAvailability();
+}
+
+if (cacheEnableChk) {
+    cacheEnableChk.addEventListener('change', () => {
+        if (cacheBody) {
+            cacheBody.style.display = cacheEnableChk.checked ? 'block' : 'none';
+        }
+        if (!cacheEnableChk.checked) updateCacheReadout(null);
+        if (cycleData.length) runSimulation();
+    });
+}
+cacheRanges.forEach(r => {
+    r.addEventListener('input', cacheSyncLabels);
+    r.addEventListener('change', () => { if (cycleData.length) runSimulation(); });
+});
+cachePresetBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        const p = CACHE_PRESETS[btn.dataset.cachePreset];
+        if (!p) return;
+        Object.keys(p).forEach(k => cacheSetKnob(k, p[k]));
+        cacheSyncLabels();
+        if (cycleData.length) runSimulation();
+    });
+});
+[cachePolicySel, cacheWriteSel, cacheTimingChk].forEach(el => {
+    if (el) el.addEventListener('change', () => { if (cycleData.length) runSimulation(); });
+});
+loadCacheMeta();
 
 // ── Wire-layer toggles (OoO renderer declutter) ──────────────────
 // Each chip persists to localStorage key cpu_sim_ooo_layer_<name>; visible by
@@ -773,6 +1008,7 @@ function displayCycle(idx) {
 
     updateRegisters(state);
     updateMemoryView(state);
+    updateCacheView(state);
 
     if (currentModel === 'pipeline') {
         updatePipelineView(state);
@@ -2012,6 +2248,8 @@ async function runSimulation() {
     const body = { preset, cycles, num_lanes: numLanes };
     if (autoCycles) body.run_to_completion = true;
     if (currentModel === 'configurable') body.cycle_costs = cfgCosts();
+    const cacheCfg = cacheRequestConfig();
+    if (cacheCfg) body.cache = cacheCfg;
 
     const bpValue = bpSel.value;
     if (bpValue) {
@@ -2044,6 +2282,7 @@ async function runSimulation() {
 
         cycleData = data.cycles;
         if (data.time_model) updateCfgReadout(data.time_model);
+        updateCacheReadout(data.cache_stats);
         // Auto mode: report how many cycles the run actually took (and warn
         // if the program never settled within the server's 10k-cycle cap).
         if (autoCycles && numCyclesIn) {
