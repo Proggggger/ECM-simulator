@@ -1,5 +1,8 @@
 # Architecture Simulator — Multi-ISA CPU Simulator & C Compiler
 
+> **Fork:** This repository is a fork of
+> [blakecragen/architecture_simulator](https://github.com/blakecragen/architecture_simulator).
+
 A pure-Python, **zero-dependency core** CPU simulator that shows how source code
 becomes machine code and how that code actually executes on hardware. It pairs a
 **from-scratch retargetable C compiler** with a **cycle-accurate microarchitecture
